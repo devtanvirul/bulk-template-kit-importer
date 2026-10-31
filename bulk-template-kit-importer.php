@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Bulk Template Kit Importer
  * Description: Copies your Elementor designs into the Envato "Template Kit - Export" library in one click, with a serial number per template so the kit keeps the order you want.
- * Version: 1.1.1
+ * Version: 1.1.2
  * Author: devtanvirul
  * Author URI: https://devtanvirul.com
  * Plugin URI: https://devtanvirul.com
@@ -766,6 +766,7 @@ final class Bulk_Template_Kit_Importer {
 			'post_type'    => self::TK_POST_TYPE,
 			'post_content' => '',
 			'menu_order'   => $position,
+			'post_date'    => $this->position_to_date( $position ),
 		);
 
 		if ( $exists ) {
@@ -848,6 +849,31 @@ final class Bulk_Template_Kit_Importer {
 		}
 
 		return 'imported';
+	}
+
+	/**
+	 * Turn a serial position into a post_date that sorts the same way.
+	 *
+	 * Template Kit Export's own "Select Templates" screen is supposed to
+	 * order templates by their menu_order, but its sort routine has a
+	 * comparator that never reports "this one belongs earlier" - only
+	 * "this one belongs later" - so it can't reliably fix a list that
+	 * doesn't already start close to the order it should end up in. The
+	 * query behind that screen has no explicit orderby, so WordPress
+	 * falls back to post_date, newest first. Rather than rely on their
+	 * sort to untangle things, every kit template made here is given a
+	 * post_date that is already in exactly the right order: the lowest
+	 * serial gets the newest date, so it is first in that newest-first
+	 * list before their sort even runs, and nothing is left for their
+	 * buggy comparator to get wrong.
+	 *
+	 * @param int $position Serial position (1-998, or self::UNNUMBERED).
+	 * @return string MySQL datetime.
+	 */
+	private function position_to_date( $position ) {
+		$minutes_from_anchor = self::UNNUMBERED - (int) $position;
+
+		return gmdate( 'Y-m-d H:i:s', strtotime( '2020-01-01 00:00:00' ) + ( $minutes_from_anchor * MINUTE_IN_SECONDS ) );
 	}
 
 	private function clear_elementor_cache() {
