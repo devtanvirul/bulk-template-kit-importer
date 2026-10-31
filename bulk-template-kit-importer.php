@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Bulk Template Kit Importer
  * Description: Copies your Elementor designs into the Envato "Template Kit - Export" library in one click, with a serial number per template so the kit keeps the order you want.
- * Version: 1.1.2
+ * Version: 1.2.0
  * Author: devtanvirul
  * Author URI: https://devtanvirul.com
  * Plugin URI: https://devtanvirul.com
@@ -31,6 +31,7 @@ final class Bulk_Template_Kit_Importer {
 	public function __construct() {
 		// Late, so every other plugin's menu is registered and can be found.
 		add_action( 'admin_menu', array( $this, 'add_menu' ), 99 );
+		add_action( 'pre_get_posts', array( $this, 'order_kit_templates' ) );
 		add_action( 'admin_post_btki_import', array( $this, 'handle_import' ) );
 		add_action( 'admin_notices', array( $this, 'notices' ) );
 	}
@@ -59,6 +60,62 @@ final class Bulk_Template_Kit_Importer {
 	 */
 	public function on_load() {
 		wp_enqueue_media();
+	}
+
+	/**
+	 * Make every query for kit templates come back in serial order.
+	 *
+	 * Template Kit Export means to order its "Select Templates" screen by
+	 * menu_order, but the sort it runs to do that is broken:
+	 *
+	 *     return $a['order'] > $b['order'] ? 1 : 0;
+	 *
+	 * It never returns -1, so it can say "this one belongs later" but
+	 * never "this one belongs earlier", and a list that starts out
+	 * backwards can never be turned around. What it starts from is
+	 * get_posts(), whose own defaults are orderby date, newest first.
+	 * A bulk import gives every template the same timestamp, so the
+	 * database falls back to ID and hands back the newest first, which
+	 * is the exact reverse of the serial order - the one case their
+	 * sort cannot recover from.
+	 *
+	 * Setting the order on the query itself fixes it at the source: the
+	 * list arrives already in serial order, and their sort, finding
+	 * nothing out of place, leaves it alone. get_posts() suppresses the
+	 * posts_* filters but not this hook, so this is the one place it can
+	 * be done from outside their plugin.
+	 *
+	 * @param WP_Query $query Query about to run.
+	 */
+	public function order_kit_templates( $query ) {
+		$post_type = $query->get( 'post_type' );
+		$wanted    = is_array( $post_type )
+			? in_array( self::TK_POST_TYPE, $post_type, true )
+			: self::TK_POST_TYPE === $post_type;
+
+		if ( ! $wanted ) {
+			return;
+		}
+
+		/*
+		 * get_posts() writes a default of "date" into every query it makes,
+		 * so that value means nobody asked for an order, the same as an
+		 * empty one. Anything else was asked for on purpose - a sortable
+		 * column in the admin list, say - and is left alone.
+		 */
+		$orderby = $query->get( 'orderby' );
+
+		if ( '' !== $orderby && 'date' !== $orderby ) {
+			return;
+		}
+
+		$query->set(
+			'orderby',
+			array(
+				'menu_order' => 'ASC',
+				'ID'         => 'ASC',
+			)
+		);
 	}
 
 	/**
@@ -766,7 +823,6 @@ final class Bulk_Template_Kit_Importer {
 			'post_type'    => self::TK_POST_TYPE,
 			'post_content' => '',
 			'menu_order'   => $position,
-			'post_date'    => $this->position_to_date( $position ),
 		);
 
 		if ( $exists ) {
@@ -849,31 +905,6 @@ final class Bulk_Template_Kit_Importer {
 		}
 
 		return 'imported';
-	}
-
-	/**
-	 * Turn a serial position into a post_date that sorts the same way.
-	 *
-	 * Template Kit Export's own "Select Templates" screen is supposed to
-	 * order templates by their menu_order, but its sort routine has a
-	 * comparator that never reports "this one belongs earlier" - only
-	 * "this one belongs later" - so it can't reliably fix a list that
-	 * doesn't already start close to the order it should end up in. The
-	 * query behind that screen has no explicit orderby, so WordPress
-	 * falls back to post_date, newest first. Rather than rely on their
-	 * sort to untangle things, every kit template made here is given a
-	 * post_date that is already in exactly the right order: the lowest
-	 * serial gets the newest date, so it is first in that newest-first
-	 * list before their sort even runs, and nothing is left for their
-	 * buggy comparator to get wrong.
-	 *
-	 * @param int $position Serial position (1-998, or self::UNNUMBERED).
-	 * @return string MySQL datetime.
-	 */
-	private function position_to_date( $position ) {
-		$minutes_from_anchor = self::UNNUMBERED - (int) $position;
-
-		return gmdate( 'Y-m-d H:i:s', strtotime( '2020-01-01 00:00:00' ) + ( $minutes_from_anchor * MINUTE_IN_SECONDS ) );
 	}
 
 	private function clear_elementor_cache() {
