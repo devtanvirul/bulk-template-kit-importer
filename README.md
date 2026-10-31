@@ -12,10 +12,26 @@ This plugin automates that copying step.
 
 - Lists every page, post, and saved Elementor template on your site in one screen
 - Lets you tick what belongs in the kit and give each row a serial number, so the Global Kit can go in first and the rest follow in the order you want — low numbers first, blank rows go last
+- Makes that serial order stick, in the step 3 screen, the Templates list and the exported ZIP alike (see [Ordering](#ordering) for why that takes doing)
+- Sets each template's **Kit type** and ticks **Include Template in Export ZIP** during the import, so step 3 needs no dropdown picking or box ticking
 - Lets you pick a screenshot for each template straight from the WordPress Media Library
 - Sets the page layout (Elementor Canvas by default, so no theme header/footer leaks into the design)
 - Copies the Elementor data into the Template Kit library and verifies, character for character, that the copy matches the source exactly
+- Shows the position actually stored on each kit template, and flags it when it disagrees with the serial
 - Re-importing a row updates the template it made before instead of creating a duplicate
+- Has a **Re-apply order and export settings only** pass that fixes a kit's order and settings in about a second, without copying any designs
+
+## Ordering
+
+Template Kit Export orders its templates by `menu_order`, which this plugin writes from your serial — but writing it is not enough on its own. Its sort comparator is:
+
+```php
+return $a['order'] > $b['order'] ? 1 : 0;
+```
+
+That never returns `-1`, so it can push an item later but never pull one earlier, and a list that starts out backwards cannot be turned around. What it starts from is `get_posts()`, whose defaults are `orderby => date, order => DESC`; a bulk import gives every template the same timestamp, so the database falls back to ID and returns them newest first — the exact reverse of the serial order.
+
+So this plugin orders the query itself, through `pre_get_posts`. The list arrives already correct and their sort finds nothing to move. Because it works at read time, templates imported before you installed this come out in the right order too.
 
 ## Requirements
 
@@ -34,10 +50,15 @@ This plugin automates that copying step.
 
 1. Tick the templates you want in the kit.
 2. Give each one a serial number to control the export order. Leave it blank if the order doesn't matter yet — unnumbered rows sort to the end.
-3. Pick a screenshot for each one (optional, but Envato requires one per template before export).
-4. Choose a page layout for the import (Canvas is the default and the usual choice).
-5. Click **Import selected into Template Kit**.
-6. Check the **Kit template** column — "exact match" means the copy is verified byte-for-byte against the source.
+3. Check the **Kit type** on each row. One is chosen for you; change it where the guess is wrong.
+4. Pick a screenshot for each one. Envato requires one per template and refuses to export without it.
+5. Choose a page layout for the import (Canvas is the default and the usual choice).
+6. Click **Import selected into Template Kit**.
+7. Check the **Kit template** column — "exact match" means the copy is verified byte-for-byte against the source, and the position shown should agree with the serial.
+
+If the order or the settings come out wrong later, **Re-apply order and export settings only** fixes them without copying anything. Nothing needs to be ticked for it.
+
+Version history, and what each release changed, is in [CHANGELOG.md](CHANGELOG.md).
 
 ## A note on the byte-for-byte check
 

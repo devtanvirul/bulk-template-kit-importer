@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Bulk Template Kit Importer
  * Description: Copies your Elementor designs into the Envato "Template Kit - Export" library in one click, with a serial number per template so the kit keeps the order you want.
- * Version: 1.3.0
+ * Version: 1.4.0
  * Author: devtanvirul
  * Author URI: https://devtanvirul.com
  * Plugin URI: https://devtanvirul.com
@@ -26,7 +26,16 @@ final class Bulk_Template_Kit_Importer {
 	/** Meta on the source post remembering the serial last used for it. */
 	const META_ORDER = '_btki_serial';
 
+	/** Meta on the source post remembering the kit type chosen for it. */
+	const META_TYPE = '_btki_kit_type';
+
+	/** Meta key Template Kit Export keeps its own per-template settings in. */
+	const TK_META = 'envato_tk_post_meta';
+
 	const PAGE_SLUG = 'btki-kit-importer';
+
+	/** Shown on the screen, so which build is running is never a guess. */
+	const VERSION = '1.4.0';
 
 	public function __construct() {
 		// Late, so every other plugin's menu is registered and can be found.
@@ -291,6 +300,137 @@ final class Bulk_Template_Kit_Importer {
 	}
 
 	/**
+	 * The template types Template Kit Export offers, copied from its own
+	 * field definitions so the values written here are ones it recognises.
+	 *
+	 * @return array<string,array<string,string>>
+	 */
+	private function kit_types() {
+		return array(
+			__( 'Full Page', 'bulk-template-kit-importer' ) => array(
+				'single-page'      => __( 'Single: Page', 'bulk-template-kit-importer' ),
+				'single-post'      => __( 'Single: Post', 'bulk-template-kit-importer' ),
+				'single-product'   => __( 'Single: Product', 'bulk-template-kit-importer' ),
+				'single-404'       => __( 'Single: 404', 'bulk-template-kit-importer' ),
+				'landing-page'     => __( 'Single: Landing Page', 'bulk-template-kit-importer' ),
+				'archive-blog'     => __( 'Archive: Blog', 'bulk-template-kit-importer' ),
+				'archive-product'  => __( 'Archive: Product', 'bulk-template-kit-importer' ),
+				'archive-search'   => __( 'Archive: Search', 'bulk-template-kit-importer' ),
+				'archive-category' => __( 'Archive: Category', 'bulk-template-kit-importer' ),
+			),
+			__( 'Section / Block', 'bulk-template-kit-importer' ) => array(
+				'section-header'      => __( 'Header', 'bulk-template-kit-importer' ),
+				'section-footer'      => __( 'Footer', 'bulk-template-kit-importer' ),
+				'section-popup'       => __( 'Popup', 'bulk-template-kit-importer' ),
+				'section-hero'        => __( 'Hero', 'bulk-template-kit-importer' ),
+				'section-about'       => __( 'About', 'bulk-template-kit-importer' ),
+				'section-faq'         => __( 'FAQ', 'bulk-template-kit-importer' ),
+				'section-contact'     => __( 'Contact', 'bulk-template-kit-importer' ),
+				'section-cta'         => __( 'Call to Action', 'bulk-template-kit-importer' ),
+				'section-team'        => __( 'Team', 'bulk-template-kit-importer' ),
+				'section-map'         => __( 'Map', 'bulk-template-kit-importer' ),
+				'section-features'    => __( 'Features', 'bulk-template-kit-importer' ),
+				'section-pricing'     => __( 'Pricing', 'bulk-template-kit-importer' ),
+				'section-testimonial' => __( 'Testimonial', 'bulk-template-kit-importer' ),
+				'section-product'     => __( 'Product', 'bulk-template-kit-importer' ),
+				'section-services'    => __( 'Services', 'bulk-template-kit-importer' ),
+				'section-stats'       => __( 'Stats', 'bulk-template-kit-importer' ),
+				'section-countdown'   => __( 'Countdown', 'bulk-template-kit-importer' ),
+				'section-portfolio'   => __( 'Portfolio', 'bulk-template-kit-importer' ),
+				'section-gallery'     => __( 'Gallery', 'bulk-template-kit-importer' ),
+				'section-logo-grid'   => __( 'Logo Grid', 'bulk-template-kit-importer' ),
+				'section-clients'     => __( 'Clients', 'bulk-template-kit-importer' ),
+				'section-loop'        => __( 'Loop', 'bulk-template-kit-importer' ),
+				'section-other'       => __( 'Other', 'bulk-template-kit-importer' ),
+			),
+		);
+	}
+
+	/**
+	 * Every valid type value, flattened, for checking what was submitted.
+	 *
+	 * @return string[]
+	 */
+	private function kit_type_values() {
+		$values = array();
+
+		foreach ( $this->kit_types() as $group ) {
+			$values = array_merge( $values, array_keys( $group ) );
+		}
+
+		return $values;
+	}
+
+	/**
+	 * The type a source post should be exported as.
+	 *
+	 * What a post is is mostly settled by what WordPress stores it as, so
+	 * that decides first and the title only breaks the few ties it cannot:
+	 * a page named "404" is a 404 template, but a page named "Pricing" is
+	 * still a whole page rather than a pricing section.
+	 *
+	 * @param int $post_id Source post.
+	 * @return string
+	 */
+	private function guess_kit_type( $post_id ) {
+		$post_type = get_post_type( $post_id );
+
+		if ( 'elementor_library' === $post_type ) {
+			$library_type = (string) get_post_meta( $post_id, '_elementor_template_type', true );
+
+			$map = array(
+				'header'          => 'section-header',
+				'footer'          => 'section-footer',
+				'popup'           => 'section-popup',
+				'single-post'     => 'single-post',
+				'single-page'     => 'single-page',
+				'single'          => 'single-page',
+				'product'         => 'single-product',
+				'product-archive' => 'archive-product',
+				'archive'         => 'archive-blog',
+				'search-results'  => 'archive-search',
+				'page'            => 'single-page',
+			);
+
+			return isset( $map[ $library_type ] ) ? $map[ $library_type ] : 'section-other';
+		}
+
+		if ( 'e-landing-page' === $post_type ) {
+			return 'landing-page';
+		}
+
+		if ( 'product' === $post_type ) {
+			return 'single-product';
+		}
+
+		if ( 'post' === $post_type ) {
+			return 'single-post';
+		}
+
+		if ( false !== strpos( mb_strtolower( (string) get_the_title( $post_id ) ), '404' ) ) {
+			return 'single-404';
+		}
+
+		return 'single-page';
+	}
+
+	/**
+	 * The type chosen for a post earlier, falling back to the guess.
+	 *
+	 * @param int $post_id Source post.
+	 * @return string
+	 */
+	private function stored_kit_type( $post_id ) {
+		$stored = (string) get_post_meta( $post_id, self::META_TYPE, true );
+
+		if ( $stored && in_array( $stored, $this->kit_type_values(), true ) ) {
+			return $stored;
+		}
+
+		return $this->guess_kit_type( $post_id );
+	}
+
+	/**
 	 * @param string $title Post title.
 	 * @return bool
 	 */
@@ -362,7 +502,12 @@ final class Bulk_Template_Kit_Importer {
 		}
 		?>
 		<div class="wrap">
-			<h1><?php esc_html_e( 'Bulk Import to Template Kit', 'bulk-template-kit-importer' ); ?></h1>
+			<h1>
+				<?php esc_html_e( 'Bulk Import to Template Kit', 'bulk-template-kit-importer' ); ?>
+				<span style="font-size:13px;font-weight:400;color:#646970;vertical-align:middle;margin-left:8px;">
+					<?php echo esc_html( 'v' . self::VERSION ); ?>
+				</span>
+			</h1>
 
 			<?php
 			if ( ! post_type_exists( self::TK_POST_TYPE ) ) {
@@ -406,6 +551,7 @@ final class Bulk_Template_Kit_Importer {
 								</td>
 								<th style="width:80px;"><?php esc_html_e( 'Serial', 'bulk-template-kit-importer' ); ?></th>
 								<th><?php esc_html_e( 'Title', 'bulk-template-kit-importer' ); ?></th>
+								<th style="width:180px;"><?php esc_html_e( 'Kit type', 'bulk-template-kit-importer' ); ?></th>
 								<th style="width:170px;"><?php esc_html_e( 'Screenshot', 'bulk-template-kit-importer' ); ?></th>
 								<th style="width:140px;"><?php esc_html_e( 'Source data', 'bulk-template-kit-importer' ); ?></th>
 								<th style="width:230px;"><?php esc_html_e( 'Kit template', 'bulk-template-kit-importer' ); ?></th>
@@ -441,6 +587,20 @@ final class Bulk_Template_Kit_Importer {
 											<?php esc_html_e( 'Edit source', 'bulk-template-kit-importer' ); ?>
 										</a>
 									</div>
+								</td>
+								<td>
+									<?php $chosen_type = $this->stored_kit_type( $id ); ?>
+									<select name="btki_type[<?php echo esc_attr( $id ); ?>]" style="max-width:175px;">
+										<?php foreach ( $this->kit_types() as $group_label => $group ) : ?>
+											<optgroup label="<?php echo esc_attr( $group_label ); ?>">
+												<?php foreach ( $group as $value => $label ) : ?>
+													<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $chosen_type, $value ); ?>>
+														<?php echo esc_html( $label ); ?>
+													</option>
+												<?php endforeach; ?>
+											</optgroup>
+										<?php endforeach; ?>
+									</select>
 								</td>
 								<td>
 									<?php
@@ -573,6 +733,20 @@ final class Bulk_Template_Kit_Importer {
 							</span>
 						</p>
 
+						<p style="margin:0 0 12px;">
+							<label>
+								<input type="checkbox" name="btki_include" value="1" checked>
+								<?php esc_html_e( 'Tick "Include Template in Export ZIP" on every template imported. Template Kit Export leaves this off by default and skips anything unticked when it builds the ZIP, so without it the export comes out empty.', 'bulk-template-kit-importer' ); ?>
+							</label>
+						</p>
+
+						<p style="margin:0 0 12px;">
+							<label>
+								<input type="checkbox" name="btki_pro" value="1">
+								<?php esc_html_e( 'Tick "Elementor Pro Required" on every template imported. Only for a kit whose designs genuinely need Elementor Pro widgets.', 'bulk-template-kit-importer' ); ?>
+							</label>
+						</p>
+
 						<p style="margin:0;">
 							<label>
 								<input type="checkbox" name="btki_prefix" value="1">
@@ -590,10 +764,10 @@ final class Bulk_Template_Kit_Importer {
 
 					<p style="margin-top:0;">
 						<button type="submit" name="btki_mode" value="order" id="btki-order-only" class="button">
-							<?php esc_html_e( 'Re-apply serial order only', 'bulk-template-kit-importer' ); ?>
+							<?php esc_html_e( 'Re-apply order and export settings only', 'bulk-template-kit-importer' ); ?>
 						</button>
 						<span style="margin-left:10px;color:#646970;">
-							<?php esc_html_e( 'Writes every serial on this screen to the kit template it belongs to, without copying any designs. Nothing needs to be ticked. Use it when the order came out wrong but the templates themselves are fine - it finishes in a second, where a full import of a large kit can run into the server time limit and stop halfway.', 'bulk-template-kit-importer' ); ?>
+							<?php esc_html_e( 'Writes the serial, the kit type and the export settings above onto the kit templates they belong to, without copying any designs. Nothing needs to be ticked. Use it when the order or the settings came out wrong but the templates themselves are fine - it finishes in a second, where a full import of a large kit can run into the server time limit and stop halfway.', 'bulk-template-kit-importer' ); ?>
 						</span>
 					</p>
 				</form>
@@ -750,6 +924,23 @@ final class Bulk_Template_Kit_Importer {
 		$shots   = isset( $_POST['btki_shot'] ) ? array_map( 'intval', (array) wp_unslash( $_POST['btki_shot'] ) ) : array();
 		$prefix  = ! empty( $_POST['btki_prefix'] );
 		$mode    = isset( $_POST['btki_mode'] ) ? sanitize_key( wp_unslash( $_POST['btki_mode'] ) ) : 'import';
+		$include = ! empty( $_POST['btki_include'] );
+		$pro     = ! empty( $_POST['btki_pro'] );
+
+		$types = isset( $_POST['btki_type'] ) ? (array) wp_unslash( $_POST['btki_type'] ) : array();
+		$valid = $this->kit_type_values();
+
+		foreach ( $types as $post_id => $type ) {
+			$type = sanitize_text_field( (string) $type );
+
+			if ( ! in_array( $type, $valid, true ) ) {
+				unset( $types[ $post_id ] );
+				continue;
+			}
+
+			$types[ $post_id ] = $type;
+			update_post_meta( (int) $post_id, self::META_TYPE, $type );
+		}
 
 		$layout = isset( $_POST['btki_layout'] ) ? sanitize_text_field( wp_unslash( $_POST['btki_layout'] ) ) : 'elementor_canvas';
 
@@ -791,6 +982,13 @@ final class Bulk_Template_Kit_Importer {
 					)
 				);
 
+				$this->write_kit_settings(
+					$template,
+					isset( $types[ $post_id ] ) ? $types[ $post_id ] : '',
+					$include,
+					$pro
+				);
+
 				$fixed++;
 			}
 
@@ -826,6 +1024,9 @@ final class Bulk_Template_Kit_Importer {
 					'prefix'     => $prefix,
 					'layout'     => $layout,
 					'document'   => $document_type,
+					'type'       => isset( $types[ $source_id ] ) ? $types[ $source_id ] : '',
+					'include'    => $include,
+					'pro'        => $pro,
 				)
 			);
 
@@ -985,6 +1186,9 @@ final class Bulk_Template_Kit_Importer {
 			delete_post_thumbnail( $template_id );
 		}
 
+		// Everything step 3 would otherwise have to be ticked by hand.
+		$this->write_kit_settings( $template_id, $args['type'], $args['include'], $args['pro'] );
+
 		update_post_meta( $source_id, self::META_LINK, $template_id );
 
 		// Drop styles generated for whatever the template held before. The
@@ -1000,6 +1204,37 @@ final class Bulk_Template_Kit_Importer {
 		}
 
 		return 'imported';
+	}
+
+	/**
+	 * Write Template Kit Export's own per-template settings.
+	 *
+	 * These live in one serialised array that the plugin's step 3 screen
+	 * reads and writes. Only the keys meant for it are touched, so
+	 * anything the user set over there by hand survives being imported
+	 * over. include_in_zip has to be the string "1": the step 3 checkbox
+	 * compares against it exactly, and the export checks it is not empty.
+	 *
+	 * @param int    $template_id Kit template.
+	 * @param string $type        One of the kit type values, or empty.
+	 * @param bool   $include     Include this template in the export ZIP.
+	 * @param bool   $pro         Mark the template as needing Elementor Pro.
+	 */
+	private function write_kit_settings( $template_id, $type, $include, $pro ) {
+		$settings = get_post_meta( $template_id, self::TK_META, true );
+
+		if ( ! is_array( $settings ) ) {
+			$settings = array();
+		}
+
+		if ( $type ) {
+			$settings['template_type'] = $type;
+		}
+
+		$settings['include_in_zip']         = $include ? '1' : null;
+		$settings['elementor_pro_required'] = $pro ? '1' : null;
+
+		update_post_meta( $template_id, self::TK_META, $settings );
 	}
 
 	private function clear_elementor_cache() {
@@ -1024,8 +1259,8 @@ final class Bulk_Template_Kit_Importer {
 				'<div class="notice notice-success is-dismissible"><p>%s</p></div>',
 				esc_html(
 					sprintf(
-						/* translators: %d: number of kit templates repositioned. */
-						__( 'Serial order re-applied to %d kit template(s). Nothing was copied, only the positions were written.', 'bulk-template-kit-importer' ),
+						/* translators: %d: number of kit templates updated. */
+						__( 'Order, kit type and export settings re-applied to %d kit template(s). No designs were copied.', 'bulk-template-kit-importer' ),
 						(int) $_GET['btki_ordered']
 					)
 				)
