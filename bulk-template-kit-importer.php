@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Bulk Template Kit Importer
  * Description: Copies your Elementor designs into the Envato "Template Kit - Export" library in one click, with a serial number per template so the kit keeps the order you want.
- * Version: 1.2.0
+ * Version: 1.3.0
  * Author: devtanvirul
  * Author URI: https://devtanvirul.com
  * Plugin URI: https://devtanvirul.com
@@ -520,6 +520,32 @@ final class Bulk_Template_Kit_Importer {
 												?>
 											</span>
 										<?php endif; ?>
+										<?php
+										// The position actually stored on the kit template, read back
+										// from the database. If this disagrees with the Serial box, the
+										// last run did not finish and the order needs re-applying.
+										$stored_position = (int) get_post_field( 'menu_order', $template );
+										$matches_serial  = ( '' === $serial && self::UNNUMBERED === $stored_position )
+											|| ( '' !== $serial && (int) $serial === $stored_position );
+										?>
+										<br>
+										<span style="color:<?php echo $matches_serial ? '#646970' : '#b32d2e'; ?>;">
+											<?php
+											if ( self::UNNUMBERED === $stored_position ) {
+												esc_html_e( 'position: last', 'bulk-template-kit-importer' );
+											} else {
+												printf(
+													/* translators: %d: position stored on the kit template. */
+													esc_html__( 'position: %d', 'bulk-template-kit-importer' ),
+													$stored_position
+												);
+											}
+
+											if ( ! $matches_serial ) {
+												echo ' &mdash; ' . esc_html__( 'does not match the serial', 'bulk-template-kit-importer' );
+											}
+											?>
+										</span>
 									<?php endif; ?>
 								</td>
 							</tr>
@@ -556,10 +582,19 @@ final class Bulk_Template_Kit_Importer {
 					</div>
 
 					<p class="submit">
-						<button type="submit" class="button button-primary button-hero">
+						<button type="submit" name="btki_mode" value="import" class="button button-primary button-hero">
 							<?php esc_html_e( 'Import selected into Template Kit', 'bulk-template-kit-importer' ); ?>
 						</button>
 						<span id="btki-count" style="margin-left:12px;color:#646970;"></span>
+					</p>
+
+					<p style="margin-top:0;">
+						<button type="submit" name="btki_mode" value="order" id="btki-order-only" class="button">
+							<?php esc_html_e( 'Re-apply serial order only', 'bulk-template-kit-importer' ); ?>
+						</button>
+						<span style="margin-left:10px;color:#646970;">
+							<?php esc_html_e( 'Writes every serial on this screen to the kit template it belongs to, without copying any designs. Nothing needs to be ticked. Use it when the order came out wrong but the templates themselves are fine - it finishes in a second, where a full import of a large kit can run into the server time limit and stop halfway.', 'bulk-template-kit-importer' ); ?>
+						</span>
 					</p>
 				</form>
 
@@ -617,10 +652,21 @@ final class Bulk_Template_Kit_Importer {
 				box.addEventListener( 'change', refresh );
 			} );
 
+			// Re-applying the order works off the serial boxes, not the
+			// ticks, so the "nothing is ticked" guard below must not catch it.
+			var orderOnly = false;
+			var orderButton = document.getElementById( 'btki-order-only' );
+
+			if ( orderButton ) {
+				orderButton.addEventListener( 'click', function () {
+					orderOnly = true;
+				} );
+			}
+
 			// Submitting with nothing ticked reports "0 imported" and looks
 			// like a failure, so say what is missing before that happens.
 			form.addEventListener( 'submit', function ( event ) {
-				if ( ! ticked() ) {
+				if ( ! orderOnly && ! ticked() ) {
 					event.preventDefault();
 					warning.style.display = 'block';
 					warning.scrollIntoView( { behavior: 'smooth', block: 'center' } );
@@ -703,6 +749,7 @@ final class Bulk_Template_Kit_Importer {
 		$serials = array_map( array( $this, 'clean_serial' ), $serials );
 		$shots   = isset( $_POST['btki_shot'] ) ? array_map( 'intval', (array) wp_unslash( $_POST['btki_shot'] ) ) : array();
 		$prefix  = ! empty( $_POST['btki_prefix'] );
+		$mode    = isset( $_POST['btki_mode'] ) ? sanitize_key( wp_unslash( $_POST['btki_mode'] ) ) : 'import';
 
 		$layout = isset( $_POST['btki_layout'] ) ? sanitize_text_field( wp_unslash( $_POST['btki_layout'] ) ) : 'elementor_canvas';
 
@@ -719,6 +766,36 @@ final class Bulk_Template_Kit_Importer {
 			} else {
 				update_post_meta( (int) $post_id, self::META_ORDER, $serial );
 			}
+		}
+
+		/*
+		 * Putting the order right does not need the designs copied again,
+		 * and copying them is the slow part. This pass writes nothing but
+		 * the position, so a kit whose order came out wrong can be fixed
+		 * in a second instead of being imported from scratch.
+		 */
+		if ( 'order' === $mode ) {
+			$fixed = 0;
+
+			foreach ( $serials as $post_id => $serial ) {
+				$template = (int) get_post_meta( (int) $post_id, self::META_LINK, true );
+
+				if ( ! $template || ! get_post_status( $template ) ) {
+					continue;
+				}
+
+				wp_update_post(
+					array(
+						'ID'         => $template,
+						'menu_order' => '' === $serial ? self::UNNUMBERED : $serial,
+					)
+				);
+
+				$fixed++;
+			}
+
+			wp_safe_redirect( add_query_arg( 'btki_ordered', $fixed, $this->clean_referer() ) );
+			exit;
 		}
 
 		// Import in serial order so the kit library is built front to back.
@@ -755,8 +832,29 @@ final class Bulk_Template_Kit_Importer {
 			$counts[ $result ]++;
 		}
 
+		// Once for the whole batch, not once per template.
+		$this->clear_elementor_cache();
+
 		wp_safe_redirect( $this->result_url( $counts ) );
 		exit;
+	}
+
+	/**
+	 * The page that submitted the form, with any previous result stripped.
+	 *
+	 * @return string
+	 */
+	private function clean_referer() {
+		$url = wp_get_referer();
+
+		if ( ! $url ) {
+			$url = admin_url( 'admin.php?page=' . self::PAGE_SLUG );
+		}
+
+		return remove_query_arg(
+			array( 'btki_imported', 'btki_skipped', 'btki_failed', 'btki_ordered' ),
+			$url
+		);
 	}
 
 	/**
@@ -770,13 +868,7 @@ final class Bulk_Template_Kit_Importer {
 	 * @return string
 	 */
 	private function result_url( array $counts ) {
-		$url = wp_get_referer();
-
-		if ( ! $url ) {
-			$url = admin_url( 'admin.php?page=' . self::PAGE_SLUG );
-		}
-
-		$url = remove_query_arg( array( 'btki_imported', 'btki_skipped', 'btki_failed' ), $url );
+		$url = $this->clean_referer();
 
 		return add_query_arg(
 			array(
@@ -895,9 +987,12 @@ final class Bulk_Template_Kit_Importer {
 
 		update_post_meta( $source_id, self::META_LINK, $template_id );
 
-		// Drop styles generated for whatever the template held before.
+		// Drop styles generated for whatever the template held before. The
+		// site wide cache is cleared once the whole batch is done, not here:
+		// clearing it per template rebuilt every CSS file on the site a
+		// dozen times over and was enough on its own to run a large import
+		// into PHP's time limit, which left half the batch unimported.
 		delete_post_meta( $template_id, '_elementor_css' );
-		$this->clear_elementor_cache();
 
 		// The copy is only good if it came back byte for byte.
 		if ( get_post_meta( $template_id, '_elementor_data', true ) !== $data ) {
@@ -920,7 +1015,26 @@ final class Bulk_Template_Kit_Importer {
 	public function notices() {
 		$page = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : '';
 
-		if ( self::PAGE_SLUG !== $page || ! isset( $_GET['btki_imported'] ) ) {
+		if ( self::PAGE_SLUG !== $page ) {
+			return;
+		}
+
+		if ( isset( $_GET['btki_ordered'] ) ) {
+			printf(
+				'<div class="notice notice-success is-dismissible"><p>%s</p></div>',
+				esc_html(
+					sprintf(
+						/* translators: %d: number of kit templates repositioned. */
+						__( 'Serial order re-applied to %d kit template(s). Nothing was copied, only the positions were written.', 'bulk-template-kit-importer' ),
+						(int) $_GET['btki_ordered']
+					)
+				)
+			);
+
+			return;
+		}
+
+		if ( ! isset( $_GET['btki_imported'] ) ) {
 			return;
 		}
 
